@@ -226,14 +226,20 @@ async function mix_fetch(url, method, form, push_to_history=true, el_cover=false
     try{
         // console.log("el_cover", el_cover)
         let conn = null
+        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") || ""
+        const options = {method: method}
+        if(method !== "GET" && csrfToken){
+            options.headers = {"X-CSRF-Token": csrfToken}
+        }
         if( method == "GET" || method == "DELETE" ){
-            conn = await fetch(url, {method:method})
+            conn = await fetch(url, options)
         }
         if( method == "POST" || method == "PATCH" || method == "PUT" ){
             if( form ){
-                conn = await fetch(url, {method:method, body: new FormData(form) })
+                options.body = new FormData(form)
+                conn = await fetch(url, options)
             }else{
-                conn = await fetch(url, {method:method})
+                conn = await fetch(url, options)
             }              
         }
         if(el){
@@ -418,7 +424,6 @@ function mix_convert(){
     })
 }
 mix_convert()
-
 
 
 

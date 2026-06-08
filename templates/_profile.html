@@ -76,8 +76,10 @@
     </form>
 
     <div class="py-8 d-flex flex-col a-items-center">
-        <a href="{{ url_for('api_delete_profile') }}" class="text-c-red" hover="cursor-pointer">
-            {{ x.lans('delete_account') }}
-        </a>
+        <form mix-put="{{ url_for('api_delete_profile') }}">
+            <button type="submit" class="text-c-red" hover="cursor-pointer">
+                {{ x.lans('delete_account') }}
+            </button>
+        </form>
     </div>
 </div>

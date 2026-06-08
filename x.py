@@ -147,6 +147,37 @@ def validate_uuid4_without_dashes(uuid4 = ""):
     if not re.match(REGEX_UUID4_WITHOUT_DASHES, uuid4): raise Exception(error, 400)
     return uuid4
 
+
+##############################
+def validate_image_upload(file, allowed_extensions):
+    if not file or not file.filename:
+        raise Exception("missing filename", 400)
+
+    filename_original = file.filename
+    if "." not in filename_original:
+        raise Exception("x-error file invalid type", 400)
+
+    file_extension = filename_original.rsplit(".", 1)[-1].lower()
+    if file_extension not in allowed_extensions:
+        raise Exception("x-error file invalid type", 400)
+
+    file.seek(0)
+    header = file.read(16)
+    file.seek(0)
+
+    signatures = {
+        "jpg": header.startswith(b"\xff\xd8\xff"),
+        "jpeg": header.startswith(b"\xff\xd8\xff"),
+        "png": header.startswith(b"\x89PNG\r\n\x1a\n"),
+        "gif": header.startswith((b"GIF87a", b"GIF89a")),
+        "webp": header.startswith(b"RIFF") and header[8:12] == b"WEBP",
+    }
+
+    if not signatures.get(file_extension, False):
+        raise Exception("x-error file invalid type", 400)
+
+    return file_extension
+
 ##############################
 POST_MIN_LEN = 2
 POST_MAX_LEN = 250
@@ -172,9 +203,11 @@ def get_tweets(cursor, user_pk, offset, limit, seed=None):
     # If a seed is provided, we sort by a hashed value of the ID + Seed.
     # This creates a random order that STAYS the same for that specific user session.
     if seed:
-        order_clause = f"ORDER BY MD5(CONCAT(p.post_pk, '{seed}'))"
+        order_clause = "ORDER BY MD5(CONCAT(p.post_pk, %s))"
+        params = (user_pk, user_pk, seed, offset, limit)
     else:
         order_clause = "ORDER BY p.post_created_at DESC"
+        params = (user_pk, user_pk, offset, limit)
 
     q = f"""
         SELECT 
@@ -192,7 +225,7 @@ def get_tweets(cursor, user_pk, offset, limit, seed=None):
         LIMIT %s, %s
     """
     
-    cursor.execute(q, (user_pk, user_pk, offset, limit))
+    cursor.execute(q, params)
     tweets = cursor.fetchall()
 
     for tweet in tweets:

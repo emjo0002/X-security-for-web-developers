@@ -4,6 +4,7 @@ from werkzeug.security import generate_password_hash
 from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
 from datetime import datetime
+import secrets
 import x 
 import time
 import uuid
@@ -17,6 +18,7 @@ from icecream import ic
 ic.configureOutput(prefix=f'----- | ', includeContext=True)
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY")
 
 app.jinja_env.globals["datetime"] = datetime
 
@@ -33,6 +35,38 @@ ITEMS_TO_FETCH = ITEMS_TO_SHOW + 1
 @app.before_request
 def load_g_user():
     g.user = session.get("user")
+
+
+##############################
+def get_csrf_token():
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+##############################
+@app.before_request
+def protect_from_csrf():
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+
+    expected_token = get_csrf_token()
+    submitted_token = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
+
+    if not secrets.compare_digest(expected_token, submitted_token or ""):
+        return "invalid csrf token", 400
+
+
+##############################
+def validate_form_uuid(name):
+    return x.validate_uuid4_without_dashes(request.form.get(name, ""))
+
+
+##############################
+def validate_value_uuid(name):
+    return x.validate_uuid4_without_dashes(request.values.get(name, ""))
     
 
 
@@ -107,7 +141,7 @@ def create_new_password(lan = "english"):
             raise Exception(x.lans("invalid_reset_key"), 400)
 
         db, cursor = x.db()
-        q = "SELECT * FROM users WHERE user_password_reset_key = %s"
+        q = "SELECT user_email FROM users WHERE user_password_reset_key = %s"
         cursor.execute(q, (key,))
         row = cursor.fetchone()
         if not row:
@@ -163,7 +197,8 @@ def view_index():
 def global_variables():
     return dict (
         x = x,
-        user = g.user
+        user = g.user,
+        csrf_token = get_csrf_token
     )
 
 ##############################
@@ -185,7 +220,15 @@ def login(lan = "english"):
             user_email = x.validate_user_email(lan)
             user_password = x.validate_user_password(lan)
             # Connect to the database
-            q = "SELECT * FROM users WHERE user_email = %s"
+            q = """
+                SELECT
+                    user_pk, user_email, user_password, user_username,
+                    user_first_name, user_last_name, user_avatar_path,
+                    user_verification_key, user_deleted_at, user_is_admin,
+                    user_blocked_at
+                FROM users
+                WHERE user_email = %s
+            """
             db, cursor = x.db()
             cursor.execute(q, (user_email,))
             user = cursor.fetchone()
@@ -325,14 +368,19 @@ def home():
             
         # ic(tweets)
 
-        q = "SELECT * FROM trends ORDER BY RAND() LIMIT 3"
+        q = "SELECT trend_title, trend_message FROM trends ORDER BY RAND() LIMIT 3"
         cursor.execute(q)
         trends = cursor.fetchall()
         # ic(trends)
 
         # Suggestions query to check if already followed
         q = """
-            SELECT users.*, 
+            SELECT
+                users.user_pk,
+                users.user_username,
+                users.user_first_name,
+                users.user_last_name,
+                users.user_avatar_path,
             (SELECT COUNT(*) 
             FROM follows 
             WHERE follow_follower_fk = %s 
@@ -356,12 +404,15 @@ def home():
         # Convert 1/0 to Boolean for Jinja
         for suggestion in suggestions:
             suggestion['is_followed_by_user'] = True if suggestion['is_followed_by_user'] > 0 else False
-            suggestion.pop("user_password", None)
         
         # Following query to get users that the current user is following
         q = """
             SELECT 
-                users.*, 
+                users.user_pk,
+                users.user_username,
+                users.user_first_name,
+                users.user_last_name,
+                users.user_avatar_path,
                 (SELECT COUNT(*) 
                     FROM follows 
                     WHERE follow_follower_fk = %s 
@@ -380,7 +431,6 @@ def home():
          # Convert 1/0 to Boolean for Jinja
         for follow in following:
             follow['is_followed_by_user'] = True if follow['is_followed_by_user'] > 0 else False
-            follow.pop("user_password", None)
 
         lan = session["user"]["user_language"]
 
@@ -555,10 +605,6 @@ def profile():
         
         if not g.user: return "invalid user"
 
-        q = "SELECT * FROM users WHERE user_pk = %s"
-        db, cursor = x.db()
-        cursor.execute(q, (g.user["user_pk"],))
-        user = cursor.fetchone()
         lan = session["user"]["user_language"]
         profile_html = render_template("_profile.html", x=x, user=g.user, lan=lan)
         return f"""<browser mix-update="main">{ profile_html }</browser>"""
@@ -704,7 +750,7 @@ def api_admin_block_user():
             return "forbidden", 403
 
         username = request.form.get("user_username", "").strip()
-        blocked_user_pk = request.form.get("user_pk", "").strip()
+        blocked_user_pk = validate_form_uuid("user_pk")
         if not username:
             return "missing username", 400
         if not blocked_user_pk:
@@ -722,7 +768,12 @@ def api_admin_block_user():
 
         # Removes the blocked user from SUGGESTIONS (who to follow) for the current user
         q = """
-            SELECT users.*, 
+            SELECT
+                users.user_pk,
+                users.user_username,
+                users.user_first_name,
+                users.user_last_name,
+                users.user_avatar_path,
                 (SELECT COUNT(*) 
                  FROM follows 
                  WHERE follow_follower_fk = %s 
@@ -750,7 +801,11 @@ def api_admin_block_user():
         # Removes the blocked user FOLLOWING for the current user
         q = """
             SELECT 
-                users.*, 
+                users.user_pk,
+                users.user_username,
+                users.user_first_name,
+                users.user_last_name,
+                users.user_avatar_path,
                 (SELECT COUNT(*) 
                     FROM follows 
                     WHERE follow_follower_fk = %s 
@@ -816,7 +871,7 @@ def api_admin_unblock_user():
         if not admin_user.get("user_is_admin"): return "forbidden", 403
 
         username = request.form.get("user_username", "").strip()
-        user_pk = request.form.get("user_pk", "").strip()
+        user_pk = validate_form_uuid("user_pk")
         if not username: return "missing username", 400
         if not user_pk: return "missing user_pk", 400
 
@@ -828,7 +883,12 @@ def api_admin_unblock_user():
 
         # SUGGESTIONS (who to follow) for the current user
         q = """
-            SELECT users.*, 
+            SELECT
+                users.user_pk,
+                users.user_username,
+                users.user_first_name,
+                users.user_last_name,
+                users.user_avatar_path,
                 (SELECT COUNT(*) 
                  FROM follows 
                  WHERE follow_follower_fk = %s 
@@ -856,7 +916,11 @@ def api_admin_unblock_user():
         # FOLLOWING for the current user
         q = """
             SELECT 
-                users.*, 
+                users.user_pk,
+                users.user_username,
+                users.user_first_name,
+                users.user_last_name,
+                users.user_avatar_path,
                 (SELECT COUNT(*) 
                     FROM follows 
                     WHERE follow_follower_fk = %s 
@@ -919,7 +983,7 @@ def api_admin_block_post():
         if not admin_user or not admin_user.get("user_is_admin"):
             return "forbidden", 403
 
-        post_pk = request.form.get("post_pk", "")
+        post_pk = validate_form_uuid("post_pk")
         if not post_pk:
             return "missing post_pk", 400
 
@@ -973,7 +1037,7 @@ def api_admin_unblock_post():
         if not admin_user or not admin_user.get("user_is_admin"):
             return "forbidden", 403
 
-        post_pk = request.form.get("post_pk", "")
+        post_pk = validate_form_uuid("post_pk")
         if not post_pk:
             return "missing post_pk", 400
 
@@ -1029,7 +1093,7 @@ def api_like_tweet():
     try:
         if not g.user: return "invalid user", 401
         
-        post_pk = request.form.get("post_pk", "") 
+        post_pk = validate_form_uuid("post_pk")
         if not post_pk: raise Exception("Missing post ID", 400)
         
         # Get the current Unix epoch timestamp in seconds
@@ -1091,7 +1155,7 @@ def api_unlike_tweet():
         if not g.user: return "invalid user", 401
         
         # Get post_pk from mix-data form
-        post_pk = request.form.get("post_pk", "") 
+        post_pk = validate_form_uuid("post_pk")
         if not post_pk: raise Exception("Missing post ID", 400)
 
         db, cursor = x.db()
@@ -1134,7 +1198,7 @@ def api_bookmark_tweet():
     try:
         if not g.user: return "invalid user", 401
 
-        post_pk = request.form.get("post_pk", "").strip()
+        post_pk = validate_form_uuid("post_pk")
         if not post_pk: raise Exception("Missing post ID", 400)
 
         current_epoch = int(time.time())
@@ -1168,7 +1232,7 @@ def api_unbookmark_tweet():
     try:
         if not g.user: return "invalid user", 401
 
-        post_pk = request.form.get("post_pk", "").strip()
+        post_pk = validate_form_uuid("post_pk")
         if not post_pk: raise Exception("Missing post ID", 400)
 
         db, cursor = x.db()
@@ -1199,7 +1263,7 @@ def follow_user():
             return "unauthorized", 401
         
         follower_fk = g.user["user_pk"]          # den nuværende bruger
-        followed_fk = request.form.get("user_pk")
+        followed_fk = validate_form_uuid("user_pk")
 
         if not followed_fk:
             raise Exception("User ID missing", 400)
@@ -1216,7 +1280,12 @@ def follow_user():
 
         # 2) Hent opdaterede suggestions (who to follow) til den NUVÆRENDE bruger
         q_suggestions = """
-            SELECT users.*, 
+            SELECT
+                users.user_pk,
+                users.user_username,
+                users.user_first_name,
+                users.user_last_name,
+                users.user_avatar_path,
                 (SELECT COUNT(*) 
                  FROM follows 
                  WHERE follow_follower_fk = %s 
@@ -1245,7 +1314,11 @@ def follow_user():
         # 3) Hent opdateret following-list til den NUVÆRENDE bruger
         q_following = """
             SELECT 
-                users.*, 
+                users.user_pk,
+                users.user_username,
+                users.user_first_name,
+                users.user_last_name,
+                users.user_avatar_path,
                 (SELECT COUNT(*) 
                  FROM follows 
                  WHERE follow_follower_fk = %s 
@@ -1297,7 +1370,7 @@ def unfollow_user():
             return "unauthorized", 401
 
         follower_fk = g.user["user_pk"]
-        followed_fk = request.form.get("user_pk")
+        followed_fk = validate_form_uuid("user_pk")
 
         if not followed_fk:
             raise Exception("User ID missing", 400)
@@ -1315,7 +1388,12 @@ def unfollow_user():
 
         # 2) Hent opdaterede suggestions (who to follow)
         q_suggestions = """
-            SELECT users.*, 
+            SELECT
+                users.user_pk,
+                users.user_username,
+                users.user_first_name,
+                users.user_last_name,
+                users.user_avatar_path,
                 (SELECT COUNT(*) 
                  FROM follows 
                  WHERE follow_follower_fk = %s 
@@ -1344,7 +1422,11 @@ def unfollow_user():
         # 3) Hent opdateret following-list for den nuværende bruger
         q_following = """
             SELECT 
-                users.*, 
+                users.user_pk,
+                users.user_username,
+                users.user_first_name,
+                users.user_last_name,
+                users.user_avatar_path,
                 (SELECT COUNT(*) 
                  FROM follows 
                  WHERE follow_follower_fk = %s 
@@ -1391,7 +1473,7 @@ def comments():
     try:
         # Opens the comments
         if request.method == "POST":
-            post_pk = request.form.get("post_pk", "")
+            post_pk = validate_form_uuid("post_pk")
             if not post_pk:
                 raise Exception("Missing post ID", 400)
             
@@ -1444,7 +1526,7 @@ def comments():
         
         # Closes the comments
         if request.method == "GET":
-            post_pk = request.args.get("post_pk", "")
+            post_pk = x.validate_uuid4_without_dashes(request.args.get("post_pk", ""))
             if not post_pk:
                 raise Exception("Missing post ID", 400)
             
@@ -1480,7 +1562,7 @@ def api_create_comment():
         if not g.user:
             return "invalid user", 401
 
-        post_pk = request.form.get("post_pk", "")
+        post_pk = validate_form_uuid("post_pk")
         if not post_pk:
             return "missing post_pk"
         
@@ -1599,12 +1681,8 @@ def api_create_post():
                 if size > 5 * 1024 * 1024:
                     raise Exception("x-error file size too large")
                 
-                # Validate file extension
                 allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
-                file_ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
-                
-                if file_ext not in allowed_extensions:
-                    raise Exception("x-error file invalid type")
+                x.validate_image_upload(file, allowed_extensions)
                 
                 # Generate unique filename
                 original_filename = secure_filename(file.filename)
@@ -1701,6 +1779,8 @@ def api_delete_post(post_pk):
         if not g.user:
             return "invalid user", 400
 
+        post_pk = x.validate_uuid4_without_dashes(post_pk)
+
         db, cursor = x.db()
 
         # Delete post from database IF its the users post
@@ -1729,17 +1809,17 @@ def api_delete_post(post_pk):
         if "db" in locals(): db.close()
 
 ##############################
-@app.route("/api-delete-comment", methods=["GET"])
+@app.route("/api-delete-comment", methods=["DELETE"])
 def api_delete_comment():
     try:
         if not g.user:
             return "invalid user", 401
         
-        comment_pk = request.args.get("comment_pk")
+        comment_pk = x.validate_uuid4_without_dashes(request.args.get("comment_pk", ""))
         if not comment_pk:
                     return "missing comment_pk", 400
         
-        post_pk = request.args.get("post_pk")
+        post_pk = x.validate_uuid4_without_dashes(request.args.get("post_pk", ""))
         if not post_pk:
                 return "missing post_pk", 400
 
@@ -1816,11 +1896,11 @@ def api_edit_comment():
         if not g.user:
             return "invalid user", 401
 
-        comment_pk = request.args.get("comment_pk")
+        comment_pk = x.validate_uuid4_without_dashes(request.args.get("comment_pk", ""))
         if not comment_pk:
             return "missing comment_pk", 400
     
-        post_pk = request.args.get("post_pk")
+        post_pk = x.validate_uuid4_without_dashes(request.args.get("post_pk", ""))
         if not post_pk:
             return "missing post_pk", 400
 
@@ -1834,6 +1914,8 @@ def api_edit_comment():
         """
         cursor.execute(q, (comment_pk,))
         row = cursor.fetchone()
+        if not row or row["comment_user_fk"] != g.user["user_pk"]:
+            return "not allowed", 403
 
         comment_text = row["comment_text"]
 
@@ -1862,11 +1944,11 @@ def api_update_comment():
         if not g.user:
             return "invalid user", 401
 
-        comment_pk = request.form.get("comment_pk")
+        comment_pk = validate_form_uuid("comment_pk")
         if not comment_pk:
             return "missing comment_pk", 400
 
-        post_pk = request.form.get("post_pk")
+        post_pk = validate_form_uuid("post_pk")
         if not post_pk:
             return "missing post_pk", 400
 
@@ -1956,24 +2038,38 @@ def api_update_comment():
 @app.route("/api-cancel-edit-comment", methods=["GET"])
 def api_cancel_edit_comment():
 
-    comment_pk = request.args.get("comment_pk")
+    if not g.user:
+        return "invalid user", 401
+
+    comment_pk = x.validate_uuid4_without_dashes(request.args.get("comment_pk", ""))
     if not comment_pk:
             return "missing comment_pk", 400
     
-    post_pk = request.args.get("post_pk")
+    post_pk = x.validate_uuid4_without_dashes(request.args.get("post_pk", ""))
     if not post_pk:
             return "missing post_pk", 400
 
     db, cursor = x.db()
     q = """
-    SELECT comments.*, users.* 
+    SELECT
+        comments.comment_pk,
+        comments.comment_text,
+        comments.comment_created_at,
+        comments.comment_updated_at,
+        users.user_pk,
+        users.user_username,
+        users.user_first_name,
+        users.user_last_name,
+        users.user_avatar_path
     FROM comments
     JOIN users ON comments.comment_user_fk = users.user_pk
-    WHERE comment_pk = %s
+    WHERE comment_pk = %s AND comment_user_fk = %s
     """
-    cursor.execute(q, (comment_pk,))
+    cursor.execute(q, (comment_pk, g.user["user_pk"]))
     row = cursor.fetchone()
     db.close()
+    if not row:
+        return "not allowed", 403
 
     html_comment = render_template(
         "___comment.html",
@@ -2005,7 +2101,11 @@ def edit_post(post_pk):
         
         # get post from db
         db, cursor = x.db()
-        q = "SELECT * FROM posts WHERE post_pk = %s AND post_user_fk = %s AND post_deleted_at = 0"
+        q = """
+            SELECT post_pk, post_message, post_media_path
+            FROM posts
+            WHERE post_pk = %s AND post_user_fk = %s AND post_deleted_at = 0
+        """
         cursor.execute(q, (post_pk, g.user["user_pk"]))
         post = cursor.fetchone()
  
@@ -2030,6 +2130,10 @@ def edit_post(post_pk):
 @app.get("/cancel-edit-post/<post_pk>")
 def cancel_edit_post(post_pk):
     try:
+        if not g.user:
+            return "invalid user", 401
+
+        post_pk = x.validate_uuid4_without_dashes(post_pk)
 
         db, cursor = x.db()
 
@@ -2061,11 +2165,11 @@ def cancel_edit_post(post_pk):
 
             FROM posts p
             JOIN users u ON u.user_pk = p.post_user_fk
-            WHERE p.post_pk = %s
+            WHERE p.post_pk = %s AND p.post_user_fk = %s
             LIMIT 1
         """
 
-        cursor.execute(q, (g.user["user_pk"], post_pk))
+        cursor.execute(q, (g.user["user_pk"], post_pk, g.user["user_pk"]))
         post = cursor.fetchone()
 
         if not post:
@@ -2097,6 +2201,8 @@ def api_update_post(post_pk):
     try:
         if not g.user: 
             return "invalid user", 400
+
+        post_pk = x.validate_uuid4_without_dashes(post_pk)
         
         post_message = x.validate_post(request.form.get("post_message", ""))
         remove_media = request.form.get("remove_media", "0")
@@ -2139,10 +2245,7 @@ def api_update_post(post_pk):
                     raise Exception("x-error file size too large")
                 
                 allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
-                file_ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
-                
-                if file_ext not in allowed_extensions:
-                    raise Exception("x-error file invalid type")
+                x.validate_image_upload(file, allowed_extensions)
                 
                 unique_filename = f"{uuid.uuid4().hex}_{secure_filename(file.filename)}"
                 
@@ -2257,10 +2360,10 @@ def api_update_profile():
         # Response to the browser
       
         toast_ok = render_template("___toast_ok.html", message=x.lans('profile_updated_successfully'))
+        nav_html = render_template("___nav_profile_tag.html")
         return f"""
             <browser mix-bottom="#toast">{toast_ok}</browser>
-            <browser mix-update="#profile_tag .name">{user_first_name}</browser>
-            <browser mix-update="#profile_tag .handle">{user_username}</browser>
+            <browser mix-replace="#profile_tag">{nav_html}</browser>
         """, 200
     except Exception as ex:
         ic(ex)
@@ -2286,7 +2389,7 @@ def api_update_profile():
         if "db" in locals(): db.close()
 
 ##############################
-@app.route("/api-delete-profile", methods=["GET", "PUT"])
+@app.route("/api-delete-profile", methods=["PUT"])
 def api_delete_profile():
     try:
         if not g.user: return "invalid user"
@@ -2327,12 +2430,12 @@ def api_upload_avatar():
         if not file or not file.filename:
             raise Exception("missing filename", 400)
         allowed_ext = {"jpg", "jpeg", "png", "gif", "webp"}
-        filename_original = file.filename
-        if "." not in filename_original:
-            raise Exception("invalid file type", 400)
-        file_extension = filename_original.rsplit(".", 1)[-1].lower()
-        if file_extension not in allowed_ext:
-            raise Exception("invalid file type", 400)
+        try:
+            file_extension = x.validate_image_upload(file, allowed_ext)
+        except Exception as upload_ex:
+            if "x-error file invalid type" in str(upload_ex):
+                raise Exception("invalid file type", 400)
+            raise
 
         # Create unique filename with UUID
         unique_id = uuid.uuid4().hex
@@ -2426,7 +2529,12 @@ def api_search():
         
         db, cursor = x.db()
         q = """
-            SELECT users.*, 
+            SELECT
+                users.user_pk,
+                users.user_username,
+                users.user_first_name,
+                users.user_last_name,
+                users.user_avatar_path,
                 (SELECT COUNT(*) 
                 FROM follows 
                 WHERE follow_follower_fk = %s 
@@ -2466,7 +2574,7 @@ def api_search():
 
 
 ##############################
-@app.get("/get-data-from-sheet")
+@app.post("/get-data-from-sheet")
 def get_data_from_sheet():
     try:
  

@@ -1,0 +1,11 @@
+{
+  "name": "x-security-for-web-developers",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "docker compose up --build",
+    "dev:detached": "docker compose up --build -d",
+    "stop": "docker compose down",
+    "logs": "docker compose logs -f web"
+  }
+}

@@ -40,7 +40,7 @@
                 </button>
 
                 <button
-                    mix-get="{{ url_for('api_delete_comment') }}?comment_pk={{ comment.comment_pk }}&post_pk={{ post_pk }}"
+                    mix-delete="{{ url_for('api_delete_comment') }}?comment_pk={{ comment.comment_pk }}&post_pk={{ post_pk }}"
                     class="text-c-red">
                     <i class="fa-solid fa-trash pointer-e-none"></i>
                 </button>
