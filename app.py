@@ -137,7 +137,9 @@ def create_new_password(lan = "english"):
             lan = "english"
         x.default_language = lan
         key = request.args.get("key") or request.form.get("key")
-        if not key:
+        try:
+            key = x.validate_uuid4_without_dashes(key)
+        except Exception:
             raise Exception(x.lans("invalid_reset_key"), 400)
 
         db, cursor = x.db()
@@ -2395,12 +2397,12 @@ def api_delete_profile():
         if not g.user: return "invalid user"
 
         db, cursor = x.db()
-        q = "UPDATE users SET user_deleted_at = %s WHere user_pk = %s"
+        q = "UPDATE users SET user_deleted_at = %s WHERE user_pk = %s"
         cursor.execute(q, (int(time.time()), g.user.get("user_pk")))
         db.commit()
         
         session.clear()
-        return redirect(url_for("login"))
+        return f"""<browser mix-redirect="{url_for('login')}"></browser>"""
 
     except Exception as ex:
         ic(ex)
