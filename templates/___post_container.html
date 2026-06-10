@@ -20,6 +20,14 @@
                 <i class="fa-regular fa-image"></i> {{ x.lans("add_media") }}
             </label>
 
+            <label class="media-btn visibility-btn" for="post_visibility">
+                <i class="fa-solid fa-eye"></i>
+                <select id="post_visibility" name="post_visibility">
+                    <option value="public" selected>Public</option>
+                    <option value="private">Private</option>
+                </select>
+            </label>
+
             <button type="submit" class="submit-post-btn">{{ x.lans("post") }}</button>
         </div>
     </form>

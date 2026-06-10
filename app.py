@@ -67,7 +67,37 @@ def validate_form_uuid(name):
 ##############################
 def validate_value_uuid(name):
     return x.validate_uuid4_without_dashes(request.values.get(name, ""))
-    
+
+
+##############################
+def user_can_access_post(post_pk):
+    try:
+        db, cursor = x.db()
+        q = """
+            SELECT post_user_fk, post_visibility
+            FROM posts
+            WHERE post_pk = %s AND post_deleted_at = 0
+        """
+        cursor.execute(q, (post_pk,))
+        post = cursor.fetchone()
+        if not post:
+            return False
+        if g.user.get("user_is_admin"):
+            return True
+        if post["post_user_fk"] == g.user["user_pk"]:
+            return True
+        return post.get("post_visibility", "public") == "public"
+    finally:
+        if "cursor" in locals(): cursor.close()
+        if "db" in locals(): db.close()
+
+
+##############################
+def get_post_visibility_from_form():
+    post_visibility = request.form.get("post_visibility", "public")
+    if post_visibility not in ("public", "private"):
+        raise Exception("invalid visibility", 400)
+    return post_visibility
 
 
 ##############################
@@ -568,19 +598,36 @@ def bookmarks_comp():
 
         user_pk = g.user["user_pk"]
         db, cursor = x.db()
-        q = """
-            SELECT 
-                p.post_pk, p.post_user_fk, p.post_message, p.post_media_path, p.post_total_likes, p.post_created_at, p.post_total_comments,
-                u.user_first_name, u.user_last_name, u.user_username, u.user_avatar_path,
-                (SELECT COUNT(*) FROM likes WHERE like_post_fk = p.post_pk AND like_user_fk = %s) AS is_liked_by_user,
-                1 AS is_bookmarked_by_user
-            FROM bookmarks b
-            JOIN posts p ON p.post_pk = b.bookmark_post_fk
-            JOIN users u ON u.user_pk = p.post_user_fk
-            WHERE b.bookmark_user_fk = %s AND p.post_blocked_at = 0
-            ORDER BY b.bookmarked_at DESC
-        """
-        cursor.execute(q, (user_pk, user_pk))
+        if g.user.get("user_is_admin"):
+            q = """
+                SELECT 
+                    p.post_pk, p.post_user_fk, p.post_message, p.post_media_path, p.post_visibility, p.post_total_likes, p.post_created_at, p.post_total_comments,
+                    u.user_first_name, u.user_last_name, u.user_username, u.user_avatar_path,
+                    (SELECT COUNT(*) FROM likes WHERE like_post_fk = p.post_pk AND like_user_fk = %s) AS is_liked_by_user,
+                    1 AS is_bookmarked_by_user
+                FROM bookmarks b
+                JOIN posts p ON p.post_pk = b.bookmark_post_fk
+                JOIN users u ON u.user_pk = p.post_user_fk
+                WHERE b.bookmark_user_fk = %s AND p.post_blocked_at = 0
+                ORDER BY b.bookmarked_at DESC
+            """
+            cursor.execute(q, (user_pk, user_pk))
+        else:
+            q = """
+                SELECT 
+                    p.post_pk, p.post_user_fk, p.post_message, p.post_media_path, p.post_visibility, p.post_total_likes, p.post_created_at, p.post_total_comments,
+                    u.user_first_name, u.user_last_name, u.user_username, u.user_avatar_path,
+                    (SELECT COUNT(*) FROM likes WHERE like_post_fk = p.post_pk AND like_user_fk = %s) AS is_liked_by_user,
+                    1 AS is_bookmarked_by_user
+                FROM bookmarks b
+                JOIN posts p ON p.post_pk = b.bookmark_post_fk
+                JOIN users u ON u.user_pk = p.post_user_fk
+                WHERE b.bookmark_user_fk = %s
+                  AND p.post_blocked_at = 0
+                  AND (p.post_visibility = 'public' OR p.post_user_fk = %s)
+                ORDER BY b.bookmarked_at DESC
+            """
+            cursor.execute(q, (user_pk, user_pk, user_pk))
         tweets = cursor.fetchall()
 
         for tweet in tweets:
@@ -703,8 +750,10 @@ def admin_posts_section():
         q = """
             SELECT 
                 p.post_pk,
+                p.post_user_fk,
                 p.post_message,
                 p.post_media_path,
+                p.post_visibility,
                 p.post_total_likes,
                 p.post_blocked_at,
                 p.post_created_at,
@@ -1102,6 +1151,8 @@ def api_like_tweet():
         current_epoch = int(time.time()) 
 
         db, cursor = x.db()
+        if not user_can_access_post(post_pk):
+            return "not allowed", 403
 
         # Insert a new like record with the composite key and timestamp
         q_insert_like = "INSERT INTO likes (like_user_fk, like_post_fk, like_timestamp) VALUES(%s, %s, %s)"
@@ -1205,6 +1256,9 @@ def api_bookmark_tweet():
 
         current_epoch = int(time.time())
         db, cursor = x.db()
+        if not user_can_access_post(post_pk):
+            return "not allowed", 403
+
         # Prevent crash on duplicates
         q = "INSERT IGNORE INTO bookmarks (bookmark_user_fk, bookmark_post_fk, bookmarked_at) VALUES (%s, %s, %s)"
         cursor.execute(q, (g.user["user_pk"], post_pk, current_epoch))
@@ -1238,6 +1292,7 @@ def api_unbookmark_tweet():
         if not post_pk: raise Exception("Missing post ID", 400)
 
         db, cursor = x.db()
+
         q = "DELETE FROM bookmarks WHERE bookmark_user_fk = %s AND bookmark_post_fk = %s"
         cursor.execute(q, (g.user["user_pk"], post_pk))
         db.commit()
@@ -1473,6 +1528,9 @@ def unfollow_user():
 @app.route("/comments", methods=["GET", "POST"])
 def comments():
     try:
+        if not g.user:
+            return "invalid user", 401
+
         # Opens the comments
         if request.method == "POST":
             post_pk = validate_form_uuid("post_pk")
@@ -1484,6 +1542,8 @@ def comments():
             ic(lan)
 
             db, cursor = x.db()
+            if not user_can_access_post(post_pk):
+                return "not allowed", 403
 
             # 1. GET the comments +  the users that belong to the comments
             q_get_all_comments = """
@@ -1533,6 +1593,9 @@ def comments():
                 raise Exception("Missing post ID", 400)
             
             db, cursor = x.db()
+            if not user_can_access_post(post_pk):
+                return "not allowed", 403
+
             q_get_count = "SELECT post_total_comments FROM posts WHERE post_pk = %s"
             cursor.execute(q_get_count, (post_pk,))
             comments_count = cursor.fetchone()["post_total_comments"]
@@ -1575,6 +1638,8 @@ def api_create_comment():
         lan = session["user"]["user_language"]
 
         db, cursor = x.db()
+        if not user_can_access_post(post_pk):
+            return "not allowed", 403
 
         # 1. Insert new comment
         q = "INSERT INTO comments VALUES(%s, %s, %s, %s, %s, %s)"
@@ -1667,6 +1732,7 @@ def api_create_post():
         if not g.user: return "invalid user"       
 
         post = x.validate_post(request.form.get("post", ""))
+        post_visibility = get_post_visibility_from_form()
         post_pk = uuid.uuid4().hex
         current_epoch = int(time.time())
         post_media_path = ""
@@ -1705,13 +1771,14 @@ def api_create_post():
         db, cursor = x.db()
         
         q = """INSERT INTO posts 
-            (post_pk, post_user_fk, post_message, post_total_likes, post_media_path, post_blocked_at, post_created_at, post_deleted_at, post_updated_at) 
-            VALUES(%s, %s, %s, %s, %s, %s, %s, %s, 0)"""
+            (post_pk, post_user_fk, post_message, post_visibility, post_total_likes, post_media_path, post_blocked_at, post_created_at, post_deleted_at, post_updated_at) 
+            VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, 0)"""
 
         cursor.execute(q, (
         post_pk,
         g.user["user_pk"],
         post,
+        post_visibility,
         0,
         post_media_path,
         0,
@@ -1732,6 +1799,12 @@ def api_create_post():
             "post_message": post,
             "post_pk": post_pk,
             "post_media_path": post_media_path,
+            "post_visibility": post_visibility,
+            "post_total_likes": 0,
+            "post_total_comments": 0,
+            "post_blocked_at": 0,
+            "is_liked_by_user": False,
+            "is_bookmarked_by_user": False,
             "post_created_at": None
         }
         html_post_container = render_template("___post_container.html")
@@ -2104,7 +2177,7 @@ def edit_post(post_pk):
         # get post from db
         db, cursor = x.db()
         q = """
-            SELECT post_pk, post_message, post_media_path
+            SELECT post_pk, post_message, post_media_path, post_visibility
             FROM posts
             WHERE post_pk = %s AND post_user_fk = %s AND post_deleted_at = 0
         """
@@ -2148,6 +2221,7 @@ def cancel_edit_post(post_pk):
                 p.post_user_fk,
                 p.post_message,
                 p.post_media_path,
+                p.post_visibility,
                 p.post_total_likes,
                 p.post_total_comments,
                 p.post_created_at,
@@ -2207,6 +2281,7 @@ def api_update_post(post_pk):
         post_pk = x.validate_uuid4_without_dashes(post_pk)
         
         post_message = x.validate_post(request.form.get("post_message", ""))
+        post_visibility = get_post_visibility_from_form()
         remove_media = request.form.get("remove_media", "0")
         
         db, cursor = x.db()
@@ -2261,9 +2336,9 @@ def api_update_post(post_pk):
         
         # Update database
         q = """UPDATE posts 
-               SET post_message = %s, post_media_path = %s, post_updated_at = %s 
+               SET post_message = %s, post_media_path = %s, post_visibility = %s, post_updated_at = %s 
                WHERE post_pk = %s AND post_user_fk = %s"""
-        cursor.execute(q, (post_message, post_media_path, int(time.time()), post_pk, g.user["user_pk"]))
+        cursor.execute(q, (post_message, post_media_path, post_visibility, int(time.time()), post_pk, g.user["user_pk"]))
         db.commit()
         
         # Fetch updated post with user data

@@ -18,6 +18,16 @@
                     <small class="char-counter">{{ post.post_message|length }}/250</small>
                 </div>
 
+                <div class="edit-post-tools">
+                    <label class="media-btn visibility-btn" for="post_visibility_{{ post.post_pk }}">
+                        <i class="fa-solid fa-eye"></i>
+                        <select id="post_visibility_{{ post.post_pk }}" name="post_visibility">
+                        <option value="public" {% if post.post_visibility != 'private' %}selected{% endif %}>Public</option>
+                        <option value="private" {% if post.post_visibility == 'private' %}selected{% endif %}>Private</option>
+                        </select>
+                    </label>
+                </div>
+
                 <!-- input for marking media for removal -->
                 <input type="hidden" name="remove_media" id="remove_media_{{ post.post_pk }}" value="0">
 

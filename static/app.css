@@ -893,6 +893,31 @@ aside {
   font-size: 14px;
 }
 
+.visibility-btn {
+  padding-right: 0.75rem;
+}
+
+.visibility-btn select {
+  appearance: none;
+  background-color: transparent;
+  border: 0;
+  color: #1d9bf0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  outline: none;
+  padding: 0 18px 0 0;
+}
+
+.visibility-btn::after {
+  content: "⌄";
+  color: #1d9bf0;
+  font-size: 16px;
+  line-height: 1;
+  margin-left: -14px;
+  pointer-events: none;
+}
+
 .submit-post-btn {
   background-color: #1d9bf0;
   color: white;
@@ -967,6 +992,14 @@ aside {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.edit-post-tools,
+.edit-media-upload {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
 .edit-textarea {

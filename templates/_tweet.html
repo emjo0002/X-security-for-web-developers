@@ -21,6 +21,9 @@
                         {% endif %}
                     </span>
                     <span class="handle">@{{ tweet.user_username }}</span> ·
+                    {% if tweet.post_visibility == 'private' %}
+                    <span class="handle">Private</span> ·
+                    {% endif %}
                     <span class="time">
                         {% if tweet.post_created_at %}
                         {% if lan == "english" %}

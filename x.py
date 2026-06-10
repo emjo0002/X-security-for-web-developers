@@ -204,15 +204,15 @@ def get_tweets(cursor, user_pk, offset, limit, seed=None):
     # This creates a random order that STAYS the same for that specific user session.
     if seed:
         order_clause = "ORDER BY MD5(CONCAT(p.post_pk, %s))"
-        params = (user_pk, user_pk, seed, offset, limit)
+        params = (user_pk, user_pk, user_pk, user_pk, seed, offset, limit)
     else:
         order_clause = "ORDER BY p.post_created_at DESC"
-        params = (user_pk, user_pk, offset, limit)
+        params = (user_pk, user_pk, user_pk, user_pk, offset, limit)
 
     q = f"""
         SELECT 
             p.post_pk, p.post_user_fk, p.post_message, p.post_media_path,
-            p.post_total_likes, p.post_created_at, p.post_total_comments,
+            p.post_visibility, p.post_total_likes, p.post_created_at, p.post_total_comments,
             u.user_first_name, u.user_last_name, u.user_username, u.user_avatar_path,
             (SELECT COUNT(*) FROM likes WHERE like_post_fk = p.post_pk AND like_user_fk = %s) AS is_liked_by_user,
             (SELECT COUNT(*) FROM bookmarks WHERE bookmark_post_fk = p.post_pk AND bookmark_user_fk = %s) AS is_bookmarked_by_user
@@ -221,6 +221,11 @@ def get_tweets(cursor, user_pk, offset, limit, seed=None):
         WHERE p.post_blocked_at = 0
         AND u.user_deleted_at = 0
         AND u.user_blocked_at = 0
+        AND (
+            p.post_visibility = 'public'
+            OR p.post_user_fk = %s
+            OR (SELECT user_is_admin FROM users WHERE user_pk = %s) = 1
+        )
         {order_clause}
         LIMIT %s, %s
     """
@@ -233,7 +238,6 @@ def get_tweets(cursor, user_pk, offset, limit, seed=None):
         tweet['is_bookmarked_by_user'] = True if tweet['is_bookmarked_by_user'] > 0 else False
     
     return tweets
-
 
 ##############################
 def send_email(to_email, subject, template):
